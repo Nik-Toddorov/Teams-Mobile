@@ -24,6 +24,8 @@ import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
+import androidx.webkit.WebViewCompat
+import androidx.webkit.WebViewFeature
 
 class MainActivity : AppCompatActivity() {
 
@@ -34,17 +36,80 @@ class MainActivity : AppCompatActivity() {
     companion object {
         private const val TEAMS_URL = "https://teams.live.com/v2/"
 
-        // Симулация на iPhone 12 Pro с iOS Safari
-        private const val IPHONE_12_PRO_USER_AGENT =
-            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1"
+        // Десктоп Microsoft Edge на Windows 10/11 - първокласно поддържан от Teams
+        private const val DESKTOP_EDGE_USER_AGENT =
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 Edg/128.0.0.0"
 
-        // Инжектиране на параметри на браузъра за заобикаляне на детекцията
+        // Инжектиране на параметри: маскиране на Client Hints (mobile: false, Windows)
+        // и форсиране на адаптивен мобилен изглед (width=device-width)
         private const val JS_DEVICE_SPOOF = """
             (function() {
                 try {
-                    Object.defineProperty(navigator, 'platform', { get: () => 'iPhone', configurable: true });
-                    Object.defineProperty(navigator, 'vendor', { get: () => 'Apple Computer, Inc.', configurable: true });
+                    // 1. Десктоп Windows среда
+                    Object.defineProperty(navigator, 'platform', { get: () => 'Win32', configurable: true });
+                    Object.defineProperty(navigator, 'vendor', { get: () => 'Google Inc.', configurable: true });
                     Object.defineProperty(navigator, 'maxTouchPoints', { get: () => 5, configurable: true });
+
+                    if (!window.chrome) {
+                        window.chrome = { runtime: {} };
+                    }
+
+                    // 2. Пренаписване на User-Agent Client Hints
+                    if (navigator.userAgentData) {
+                        const fakeUAData = {
+                            brands: [
+                                { brand: 'Chromium', version: '128' },
+                                { brand: 'Microsoft Edge', version: '128' },
+                                { brand: 'Not;A=Brand', version: '24' }
+                            ],
+                            mobile: false,
+                            platform: 'Windows',
+                            getHighEntropyValues: function(hints) {
+                                return Promise.resolve({
+                                    architecture: 'x86',
+                                    bitness: '64',
+                                    brands: [
+                                        { brand: 'Chromium', version: '128' },
+                                        { brand: 'Microsoft Edge', version: '128' },
+                                        { brand: 'Not;A=Brand', version: '24' }
+                                    ],
+                                    mobile: false,
+                                    model: '',
+                                    platform: 'Windows',
+                                    platformVersion: '15.0.0',
+                                    uaFullVersion: '128.0.2739.67'
+                                });
+                            },
+                            toJSON: function() {
+                                return {
+                                    brands: this.brands,
+                                    mobile: false,
+                                    platform: 'Windows'
+                                };
+                            }
+                        };
+                        Object.defineProperty(navigator, 'userAgentData', {
+                            get: () => fakeUAData,
+                            configurable: true
+                        });
+                    }
+
+                    // 3. Форсиране на мобилния Viewport за плавно напасване по екрана
+                    function setViewport() {
+                        let meta = document.querySelector('meta[name="viewport"]');
+                        if (!meta) {
+                            meta = document.createElement('meta');
+                            meta.name = 'viewport';
+                            document.head.appendChild(meta);
+                        }
+                        meta.content = 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no';
+                    }
+
+                    if (document.readyState === 'loading') {
+                        document.addEventListener('DOMContentLoaded', setViewport);
+                    } else {
+                        setViewport();
+                    }
                 } catch(e) {}
             })();
         """
@@ -104,6 +169,15 @@ class MainActivity : AppCompatActivity() {
 
         setContentView(rootLayout)
 
+        // Инжектиране на JavaScript още ПРЕДИ изпълнението на скриптовете в страницата
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+            WebViewCompat.addDocumentStartJavaScript(
+                webView,
+                JS_DEVICE_SPOOF,
+                setOf("*")
+            )
+        }
+
         requestRequiredPermissions()
         configureCookieManager()
         configureWebSettings()
@@ -126,16 +200,16 @@ class MainActivity : AppCompatActivity() {
     @SuppressLint("SetJavaScriptEnabled")
     private fun configureWebSettings() {
         val settings = webView.settings
-        settings.userAgentString = IPHONE_12_PRO_USER_AGENT
+        settings.userAgentString = DESKTOP_EDGE_USER_AGENT
         settings.javaScriptEnabled = true
         settings.domStorageEnabled = true
         settings.databaseEnabled = true
         settings.cacheMode = WebSettings.LOAD_DEFAULT
         settings.loadsImagesAutomatically = true
-        settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+        settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
         settings.mediaPlaybackRequiresUserGesture = false
         settings.useWideViewPort = true
-        settings.loadWithOverviewMode = true
+        settings.loadWithOverviewMode = false // Предотвратява отдалечаването на съдържанието
         settings.setSupportZoom(false)
         settings.displayZoomControls = false
         settings.allowFileAccess = true
@@ -163,19 +237,24 @@ class MainActivity : AppCompatActivity() {
                 view: WebView?,
                 request: WebResourceRequest?
             ): Boolean {
-                val url = request?.url?.toString() ?: return false
+                val host = request?.url?.host?.lowercase() ?: return false
 
-                if (url.contains("teams.live.com") ||
-                    url.contains("login.live.com") ||
-                    url.contains("login.microsoftonline.com") ||
-                    url.contains("account.live.com") ||
-                    url.contains("microsoft.com")
+                // Задържаме всички домейни за удостоверяване и сесии на Microsoft вътре в приложението
+                if (host.contains("teams.") ||
+                    host.contains("live.com") ||
+                    host.contains("microsoft.com") ||
+                    host.contains("microsoftonline.com") ||
+                    host.contains("office.com") ||
+                    host.contains("msftauth.net") ||
+                    host.contains("msauth.net") ||
+                    host.contains("windows.net") ||
+                    host.contains("skype.com")
                 ) {
                     return false
                 }
 
                 return try {
-                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                    val intent = Intent(Intent.ACTION_VIEW, request.url)
                     startActivity(intent)
                     true
                 } catch (e: Exception) {
