@@ -3,15 +3,18 @@ package com.example.teamsmobile
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.PermissionRequest
+import android.webkit.ServiceWorkerController
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
@@ -34,67 +37,78 @@ class MainActivity : AppCompatActivity() {
     private var fileUploadCallback: ValueCallback<Array<Uri>>? = null
 
     companion object {
+        private const val PREFS_NAME = "teams_app_prefs"
+        private const val KEY_LAST_URL = "last_valid_url"
         private const val TEAMS_URL = "https://teams.live.com/v2/"
 
-        // Десктоп Microsoft Edge на Windows 10/11 - първокласно поддържан от Teams
+        // Пълно десктоп представяне като Microsoft Edge на Windows 10/11
         private const val DESKTOP_EDGE_USER_AGENT =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 Edg/128.0.0.0"
 
-        // Инжектиране на параметри: маскиране на Client Hints (mobile: false, Windows)
-        // и форсиране на адаптивен мобилен изглед (width=device-width)
+        // Инжектиране на прототипи: Client Hints, Windows платформа и десктоп резолюция
         private const val JS_DEVICE_SPOOF = """
             (function() {
                 try {
-                    // 1. Десктоп Windows среда
-                    Object.defineProperty(navigator, 'platform', { get: () => 'Win32', configurable: true });
-                    Object.defineProperty(navigator, 'vendor', { get: () => 'Google Inc.', configurable: true });
-                    Object.defineProperty(navigator, 'maxTouchPoints', { get: () => 5, configurable: true });
+                    // 1. Десктоп платформа върху navigator и прототипа Navigator
+                    const winPlatform = 'Win32';
+                    const vendor = 'Google Inc.';
+
+                    try { Object.defineProperty(navigator, 'platform', { get: () => winPlatform, configurable: true }); } catch(e){}
+                    try { Object.defineProperty(Navigator.prototype, 'platform', { get: () => winPlatform, configurable: true }); } catch(e){}
+                    try { Object.defineProperty(navigator, 'vendor', { get: () => vendor, configurable: true }); } catch(e){}
+                    try { Object.defineProperty(Navigator.prototype, 'vendor', { get: () => vendor, configurable: true }); } catch(e){}
 
                     if (!window.chrome) {
                         window.chrome = { runtime: {} };
                     }
 
-                    // 2. Пренаписване на User-Agent Client Hints
-                    if (navigator.userAgentData) {
-                        const fakeUAData = {
-                            brands: [
-                                { brand: 'Chromium', version: '128' },
-                                { brand: 'Microsoft Edge', version: '128' },
-                                { brand: 'Not;A=Brand', version: '24' }
-                            ],
-                            mobile: false,
-                            platform: 'Windows',
-                            getHighEntropyValues: function(hints) {
-                                return Promise.resolve({
-                                    architecture: 'x86',
-                                    bitness: '64',
-                                    brands: [
-                                        { brand: 'Chromium', version: '128' },
-                                        { brand: 'Microsoft Edge', version: '128' },
-                                        { brand: 'Not;A=Brand', version: '24' }
-                                    ],
-                                    mobile: false,
-                                    model: '',
-                                    platform: 'Windows',
-                                    platformVersion: '15.0.0',
-                                    uaFullVersion: '128.0.2739.67'
-                                });
-                            },
-                            toJSON: function() {
-                                return {
-                                    brands: this.brands,
-                                    mobile: false,
-                                    platform: 'Windows'
-                                };
-                            }
-                        };
-                        Object.defineProperty(navigator, 'userAgentData', {
-                            get: () => fakeUAData,
-                            configurable: true
-                        });
-                    }
+                    // 2. Пренаписване на User-Agent Client Hints (mobile: false)
+                    const fakeUAData = {
+                        brands: [
+                            { brand: 'Chromium', version: '128' },
+                            { brand: 'Microsoft Edge', version: '128' },
+                            { brand: 'Not;A=Brand', version: '24' }
+                        ],
+                        mobile: false,
+                        platform: 'Windows',
+                        getHighEntropyValues: function(hints) {
+                            return Promise.resolve({
+                                architecture: 'x86',
+                                bitness: '64',
+                                brands: [
+                                    { brand: 'Chromium', version: '128' },
+                                    { brand: 'Microsoft Edge', version: '128' },
+                                    { brand: 'Not;A=Brand', version: '24' }
+                                ],
+                                mobile: false,
+                                model: '',
+                                platform: 'Windows',
+                                platformVersion: '15.0.0',
+                                uaFullVersion: '128.0.2739.67'
+                            });
+                        },
+                        toJSON: function() {
+                            return {
+                                brands: this.brands,
+                                mobile: false,
+                                platform: 'Windows'
+                            };
+                        }
+                    };
 
-                    // 3. Форсиране на мобилния Viewport за плавно напасване по екрана
+                    try { Object.defineProperty(navigator, 'userAgentData', { get: () => fakeUAData, configurable: true }); } catch(e){}
+                    try { Object.defineProperty(Navigator.prototype, 'userAgentData', { get: () => fakeUAData, configurable: true }); } catch(e){}
+
+                    // 3. Заобикаляне на проверката за минимален десктоп екран (screen.width >= 1280)
+                    try {
+                        const targetWidth = Math.max(window.innerWidth, 1366);
+                        Object.defineProperty(screen, 'width', { get: () => targetWidth, configurable: true });
+                        Object.defineProperty(screen, 'availWidth', { get: () => targetWidth, configurable: true });
+                        Object.defineProperty(Screen.prototype, 'width', { get: () => targetWidth, configurable: true });
+                        Object.defineProperty(Screen.prototype, 'availWidth', { get: () => targetWidth, configurable: true });
+                    } catch(e) {}
+
+                    // 4. Viewport нагласяне за плавно побиране на мобилния дисплей
                     function setViewport() {
                         let meta = document.querySelector('meta[name="viewport"]');
                         if (!meta) {
@@ -142,7 +156,9 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Програмен UI без зависимости от XML ресурси
+        // Ключово: Задаване на десктоп User-Agent и за фоновите Service Workers
+        configureServiceWorker()
+
         val rootLayout = FrameLayout(this).apply {
             layoutParams = ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -169,7 +185,6 @@ class MainActivity : AppCompatActivity() {
 
         setContentView(rootLayout)
 
-        // Инжектиране на JavaScript още ПРЕДИ изпълнението на скриптовете в страницата
         if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
             WebViewCompat.addDocumentStartJavaScript(
                 webView,
@@ -185,9 +200,22 @@ class MainActivity : AppCompatActivity() {
         handleBackNavigation()
 
         if (savedInstanceState == null) {
-            webView.loadUrl(TEAMS_URL)
+            val startUrl = getSavedUrl()
+            webView.loadUrl(startUrl)
         } else {
             webView.restoreState(savedInstanceState)
+        }
+    }
+
+    private fun configureServiceWorker() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            try {
+                val swController = ServiceWorkerController.getInstance()
+                swController.serviceWorkerWebSettings.userAgentString = DESKTOP_EDGE_USER_AGENT
+                swController.serviceWorkerWebSettings.cacheMode = WebSettings.LOAD_DEFAULT
+            } catch (e: Exception) {
+                // Игнорира се, ако устройството не поддържа Service Worker настройки
+            }
         }
     }
 
@@ -209,7 +237,7 @@ class MainActivity : AppCompatActivity() {
         settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
         settings.mediaPlaybackRequiresUserGesture = false
         settings.useWideViewPort = true
-        settings.loadWithOverviewMode = false // Предотвратява отдалечаването на съдържанието
+        settings.loadWithOverviewMode = false
         settings.setSupportZoom(false)
         settings.displayZoomControls = false
         settings.allowFileAccess = true
@@ -230,6 +258,9 @@ class MainActivity : AppCompatActivity() {
                 super.onPageFinished(view, url)
                 progressBar.visibility = View.GONE
                 view?.evaluateJavascript(JS_DEVICE_SPOOF, null)
+
+                // Записване на работещия URL и незабавно запазване на сесионните бисквитки
+                saveWorkingUrl(url)
                 CookieManager.getInstance().flush()
             }
 
@@ -239,7 +270,6 @@ class MainActivity : AppCompatActivity() {
             ): Boolean {
                 val host = request?.url?.host?.lowercase() ?: return false
 
-                // Задържаме всички домейни за удостоверяване и сесии на Microsoft вътре в приложението
                 if (host.contains("teams.") ||
                     host.contains("live.com") ||
                     host.contains("microsoft.com") ||
@@ -301,6 +331,28 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun saveWorkingUrl(url: String?) {
+        if (url.isNullOrBlank()) return
+        val host = Uri.parse(url).host?.lowercase() ?: ""
+        
+        // Запазваме адреса, само ако е вътре в Teams, а не при грешка или временна препратка
+        if ((host.contains("teams.live.com") || host.contains("teams.microsoft.com"))
+            && !url.contains("login.")
+            && !url.contains("logout")
+            && !url.contains("error")
+        ) {
+            getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .putString(KEY_LAST_URL, url)
+                .apply()
+        }
+    }
+
+    private fun getSavedUrl(): String {
+        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        return prefs.getString(KEY_LAST_URL, TEAMS_URL) ?: TEAMS_URL
+    }
+
     private fun handleBackNavigation() {
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() {
@@ -340,8 +392,14 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onPause() {
+        CookieManager.getInstance().flush()
         webView.onPause()
         super.onPause()
+    }
+
+    override fun onStop() {
+        CookieManager.getInstance().flush()
+        super.onStop()
     }
 
     override fun onDestroy() {
