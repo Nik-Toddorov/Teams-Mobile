@@ -27,8 +27,6 @@ import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
-import androidx.webkit.WebViewCompat
-import androidx.webkit.WebViewFeature
 
 class MainActivity : AppCompatActivity() {
 
@@ -41,15 +39,14 @@ class MainActivity : AppCompatActivity() {
         private const val KEY_LAST_URL = "last_valid_url"
         private const val TEAMS_URL = "https://teams.live.com/v2/"
 
-        // Пълно десктоп представяне като Microsoft Edge на Windows 10/11
+        // Пълно десктоп представяне като Microsoft Edge на Windows
         private const val DESKTOP_EDGE_USER_AGENT =
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 Edg/128.0.0.0"
 
-        // Инжектиране на прототипи: Client Hints, Windows платформа и десктоп резолюция
+        // Инжектиране на прототипи: Client Hints (mobile: false), Windows и десктоп резолюция
         private const val JS_DEVICE_SPOOF = """
             (function() {
                 try {
-                    // 1. Десктоп платформа върху navigator и прототипа Navigator
                     const winPlatform = 'Win32';
                     const vendor = 'Google Inc.';
 
@@ -62,7 +59,6 @@ class MainActivity : AppCompatActivity() {
                         window.chrome = { runtime: {} };
                     }
 
-                    // 2. Пренаписване на User-Agent Client Hints (mobile: false)
                     const fakeUAData = {
                         brands: [
                             { brand: 'Chromium', version: '128' },
@@ -99,7 +95,6 @@ class MainActivity : AppCompatActivity() {
                     try { Object.defineProperty(navigator, 'userAgentData', { get: () => fakeUAData, configurable: true }); } catch(e){}
                     try { Object.defineProperty(Navigator.prototype, 'userAgentData', { get: () => fakeUAData, configurable: true }); } catch(e){}
 
-                    // 3. Заобикаляне на проверката за минимален десктоп екран (screen.width >= 1280)
                     try {
                         const targetWidth = Math.max(window.innerWidth, 1366);
                         Object.defineProperty(screen, 'width', { get: () => targetWidth, configurable: true });
@@ -108,7 +103,6 @@ class MainActivity : AppCompatActivity() {
                         Object.defineProperty(Screen.prototype, 'availWidth', { get: () => targetWidth, configurable: true });
                     } catch(e) {}
 
-                    // 4. Viewport нагласяне за плавно побиране на мобилния дисплей
                     function setViewport() {
                         let meta = document.querySelector('meta[name="viewport"]');
                         if (!meta) {
@@ -156,7 +150,7 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Ключово: Задаване на десктоп User-Agent и за фоновите Service Workers
+        // Предотвратява изтичането на мобилния User-Agent през фоновия Service Worker
         configureServiceWorker()
 
         val rootLayout = FrameLayout(this).apply {
@@ -185,14 +179,6 @@ class MainActivity : AppCompatActivity() {
 
         setContentView(rootLayout)
 
-        if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
-            WebViewCompat.addDocumentStartJavaScript(
-                webView,
-                JS_DEVICE_SPOOF,
-                setOf("*")
-            )
-        }
-
         requestRequiredPermissions()
         configureCookieManager()
         configureWebSettings()
@@ -214,7 +200,7 @@ class MainActivity : AppCompatActivity() {
                 swController.serviceWorkerWebSettings.userAgentString = DESKTOP_EDGE_USER_AGENT
                 swController.serviceWorkerWebSettings.cacheMode = WebSettings.LOAD_DEFAULT
             } catch (e: Exception) {
-                // Игнорира се, ако устройството не поддържа Service Worker настройки
+                // Игнорира се, ако устройството не поддържа контролера
             }
         }
     }
@@ -259,7 +245,6 @@ class MainActivity : AppCompatActivity() {
                 progressBar.visibility = View.GONE
                 view?.evaluateJavascript(JS_DEVICE_SPOOF, null)
 
-                // Записване на работещия URL и незабавно запазване на сесионните бисквитки
                 saveWorkingUrl(url)
                 CookieManager.getInstance().flush()
             }
@@ -335,7 +320,6 @@ class MainActivity : AppCompatActivity() {
         if (url.isNullOrBlank()) return
         val host = Uri.parse(url).host?.lowercase() ?: ""
         
-        // Запазваме адреса, само ако е вътре в Teams, а не при грешка или временна препратка
         if ((host.contains("teams.live.com") || host.contains("teams.microsoft.com"))
             && !url.contains("login.")
             && !url.contains("logout")
